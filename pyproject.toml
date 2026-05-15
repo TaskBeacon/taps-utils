@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "taps-utils"
+version = "0.1.0"
+description = "Strict utilities for validating and migrating TaskBeacon TAPS task packages."
+requires-python = ">=3.10"
+authors = [
+  { name = "Zhipeng Cao", email = "zhipeng30@foxmail.com" }
+]
+dependencies = [
+  "pyyaml>=6"
+]
+
+[project.scripts]
+taps-validate = "taps_utils.validate:main"
+taps-contracts = "taps_utils.cli:contracts_main"
+taps-migrate-metadata = "taps_utils.migrate_metadata:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
