@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .contract_source import resolve_contracts_root
+from .profiles import ProfileResolutionError, profile_contract_ids, resolve_task_profile
 
 try:
     import yaml  # type: ignore
@@ -999,6 +1000,11 @@ def _check_taskbeacon(task_dir: Path, cfg: dict[str, Any]) -> ContractResult:
     if allowed_maturity and maturity not in allowed_maturity:
         fails.append(f"Invalid maturity '{maturity}'. Allowed: {allowed_maturity}")
 
+    runtime_profile = _nested_get(tb, "runtime.profile")
+    allowed_profiles = list(cfg.get("allowed_runtime_profiles") or [])
+    if allowed_profiles and runtime_profile not in allowed_profiles:
+        fails.append(f"Invalid runtime.profile '{runtime_profile}'. Allowed: {allowed_profiles}")
+
     required_version = str(cfg.get("required_contract_version") or "").strip()
     adopted_version = _nested_get(tb, "contracts.taps")
     if required_version and adopted_version != required_version:
@@ -1616,17 +1622,49 @@ def _check_responder_plugin(task_dir: Path, cfg: dict[str, Any]) -> ContractResu
     return _result(name, fails, warns, suggestions)
 
 
+def _check_text_file(task_dir: Path, cfg: dict[str, Any]) -> ContractResult:
+    name = str(cfg.get("name") or "text_file")
+    rel = str(cfg.get("file") or "")
+    path = task_dir / rel
+    fails: list[str] = []
+    warns: list[str] = []
+    suggestions: list[str] = []
+
+    if not path.exists():
+        return _result(name, [f"Missing file: {rel}"], [], [f"Create {rel} according to the contract."])
+
+    text = _read_text_with_fallback(path)
+    for token in list(cfg.get("required_strings_all") or []):
+        if str(token) not in text:
+            fails.append(f"Missing required token in {rel}: {token}")
+
+    required_any = [str(token) for token in list(cfg.get("required_function_tokens_any") or [])]
+    if required_any and not any(token in text for token in required_any):
+        fails.append(f"{rel} should include one of: {required_any}")
+
+    recommended_any = [str(token) for token in list(cfg.get("recommended_strings_any") or [])]
+    if recommended_any and not any(token in text for token in recommended_any):
+        warns.append(f"{rel} is missing recommended token group: {recommended_any}")
+
+    if fails:
+        suggestions.append(f"Update {rel} to match the runtime profile contract.")
+    return _result(name, fails, warns, suggestions)
+
+
 def _contract_files_for(name: str) -> str:
     mapping = {
         "required_files": "required_files.yaml",
         "gitignore": "gitignore.yaml",
         "taskbeacon": "taskbeacon.yaml",
         "config_base": "config.yaml",
+        "config_web": "config_web.yaml",
         "config_qa": "config_qa.yaml",
         "config_scripted_sim": "config_scripted_sim.yaml",
         "config_sampler_sim": "config_sampler_sim.yaml",
         "responder_plugin": "responder_plugin.yaml",
         "runtime_main": "runtime_main.yaml",
+        "runtime_main_ts": "runtime_main_ts.yaml",
+        "runtime_trial_ts": "runtime_trial_ts.yaml",
         "responder_context": "responder_context.yaml",
         "readme_meta": "readme_meta.yaml",
         "changelog": "changelog.yaml",
@@ -1638,13 +1676,40 @@ def _contract_files_for(name: str) -> str:
     return mapping[name]
 
 
+def _contract_path_for(contracts_root: Path, cid: str, *, profile: str | None, common_ids: set[str]) -> Path:
+    rel = _contract_files_for(cid)
+    if profile is None:
+        return contracts_root / rel
+    if cid in common_ids:
+        return contracts_root / "common" / rel
+    return contracts_root / "profiles" / profile / rel
+
+
 def _run_checks(task_dir: Path, contracts_root: Path) -> list[ContractResult]:
     manifest = _load_yaml(contracts_root / "manifest.yaml") or {}
-    contract_ids = list(manifest.get("contracts") or [])
+    profile: str | None = None
+    common_ids: set[str] = set()
+    if "contracts" in manifest:
+        contract_ids = list(manifest.get("contracts") or [])
+    else:
+        allowed_profiles = [str(p) for p in list(manifest.get("profiles") or [])]
+        try:
+            profile = resolve_task_profile(task_dir, allowed_profiles=allowed_profiles)
+            contract_ids = profile_contract_ids(manifest, profile)
+            common_ids = {str(cid) for cid in list(manifest.get("common_contracts") or [])}
+        except ProfileResolutionError as exc:
+            return [
+                ContractResult(
+                    name="profile",
+                    status="FAIL",
+                    messages=[f"FAIL: {exc}"],
+                    suggestions=["Set runtime.profile to one of the profiles declared by the contract manifest."],
+                )
+            ]
     results: list[ContractResult] = []
 
     for cid in contract_ids:
-        contract_cfg = _load_yaml(contracts_root / _contract_files_for(str(cid))) or {}
+        contract_cfg = _load_yaml(_contract_path_for(contracts_root, str(cid), profile=profile, common_ids=common_ids)) or {}
         if cid == "required_files":
             results.append(_check_required_files(task_dir, contract_cfg))
         elif cid == "gitignore":
@@ -1652,6 +1717,8 @@ def _run_checks(task_dir: Path, contracts_root: Path) -> list[ContractResult]:
         elif cid == "taskbeacon":
             results.append(_check_taskbeacon(task_dir, contract_cfg))
         elif cid == "config_base":
+            results.append(_check_config_file(task_dir, contract_cfg))
+        elif cid == "config_web":
             results.append(_check_config_file(task_dir, contract_cfg))
         elif cid == "config_qa":
             results.append(_check_config_file(task_dir, contract_cfg))
@@ -1663,6 +1730,10 @@ def _run_checks(task_dir: Path, contracts_root: Path) -> list[ContractResult]:
             results.append(_check_responder_plugin(task_dir, contract_cfg))
         elif cid == "runtime_main":
             results.append(_check_runtime_main(task_dir, contract_cfg))
+        elif cid == "runtime_main_ts":
+            results.append(_check_text_file(task_dir, contract_cfg))
+        elif cid == "runtime_trial_ts":
+            results.append(_check_text_file(task_dir, contract_cfg))
         elif cid == "responder_context":
             results.append(_check_responder_context(task_dir, contract_cfg))
         elif cid == "readme_meta":

@@ -49,3 +49,16 @@ def test_dry_run_does_not_write(tmp_path):
 
     assert result.changed is True
     assert path.read_text(encoding="utf-8") == original
+
+
+def test_migrate_to_v020_adds_runtime_profile(tmp_path):
+    path = tmp_path / "taskbeacon.yaml"
+    path.write_text("contracts:\n  taps: v0.1.0\n", encoding="utf-8")
+
+    result = migrate_file(path, write=True, version="v0.2.0", profile="web")
+
+    assert result.changed is True
+    text = path.read_text(encoding="utf-8")
+    assert "taps: v0.2.0" in text
+    assert "runtime:" in text
+    assert "profile: web" in text
