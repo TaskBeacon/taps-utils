@@ -145,8 +145,12 @@ def write_profile_contract(root: Path) -> Path:
                 "name: runtime_main_ts",
                 "file: main.ts",
                 "required_strings_all: [psyflow-web, mountTaskApp]",
+                "required_strings_any:",
+                "  - config/config.yaml?raw",
+                "  - ./config/config.yaml",
                 "required_function_tokens_any:",
                 "  - export async function run",
+                "  - export async function main",
             ]
         ),
         encoding="utf-8",
@@ -156,9 +160,13 @@ def write_profile_contract(root: Path) -> Path:
             [
                 "name: runtime_trial_ts",
                 "file: src/run_trial.ts",
-                "required_strings_all: [set_trial_context, TrialBuilder]",
+                "required_strings_all: [TrialBuilder]",
+                "required_strings_any:",
+                "  - set_trial_context",
+                "  - setContext",
                 "required_function_tokens_any:",
                 "  - export function run_trial",
+                "  - export function runTrial",
             ]
         ),
         encoding="utf-8",
@@ -194,11 +202,13 @@ def write_web_task(root: Path, *, include_profile: bool = True) -> None:
     )
     (root / "README.md").write_text("# Demo\n", encoding="utf-8")
     (root / "main.ts").write_text(
-        'import { mountTaskApp } from "psyflow-web";\nexport async function run(root: HTMLElement) { mountTaskApp; }\n',
+        'import { mountTaskApp } from "psyflow-web";\n'
+        'const configUrl = new URL("./config/config.yaml", import.meta.url);\n'
+        "export async function main(root: HTMLElement) { mountTaskApp; configUrl; }\n",
         encoding="utf-8",
     )
     (root / "src" / "run_trial.ts").write_text(
-        'import { set_trial_context, TrialBuilder } from "psyflow-web";\nexport function run_trial(trial: TrialBuilder) { set_trial_context; return trial; }\n',
+        'import { TrialBuilder } from "psyflow-web";\nexport function runTrial(trial: TrialBuilder) { trial.setContext; return trial; }\n',
         encoding="utf-8",
     )
     (root / "config" / "config.yaml").write_text(

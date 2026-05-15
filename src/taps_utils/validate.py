@@ -1124,11 +1124,14 @@ def _check_config_file(task_dir: Path, cfg: dict[str, Any]) -> ContractResult:
 
         if bool(profile_rules.get("require_shorter_than_base", False)) and base_data is not None:
             base_trials = _as_int(_nested_get(base_data, trials_path))
+            allow_equal_lte = _as_int(profile_rules.get("allow_equal_when_base_trials_lte"))
             if cur_trials is None:
                 fails.append(f"profile_rules missing numeric value: {trials_path}")
             elif base_trials is None:
                 fails.append(f"profile_rules missing numeric value in base: {trials_path}")
-            elif cur_trials >= base_trials:
+            elif cur_trials >= base_trials and not (
+                allow_equal_lte is not None and base_trials <= allow_equal_lte and cur_trials == base_trials
+            ):
                 fails.append(
                     f"smoke profile must be shorter than base: {trials_path}={cur_trials} "
                     f"(base={base_trials})"
@@ -1637,6 +1640,10 @@ def _check_text_file(task_dir: Path, cfg: dict[str, Any]) -> ContractResult:
     for token in list(cfg.get("required_strings_all") or []):
         if str(token) not in text:
             fails.append(f"Missing required token in {rel}: {token}")
+
+    required_strings_any = [str(token) for token in list(cfg.get("required_strings_any") or [])]
+    if required_strings_any and not any(token in text for token in required_strings_any):
+        fails.append(f"{rel} should include one of: {required_strings_any}")
 
     required_any = [str(token) for token in list(cfg.get("required_function_tokens_any") or [])]
     if required_any and not any(token in text for token in required_any):
