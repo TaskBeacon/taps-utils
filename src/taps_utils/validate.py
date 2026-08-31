@@ -1015,6 +1015,61 @@ def _check_taskbeacon(task_dir: Path, cfg: dict[str, Any]) -> ContractResult:
     return _result(name, fails, warns, suggestions)
 
 
+def _check_intact_protocol_smoke(
+    task_dir: Path, data: dict[str, Any], base: dict[str, Any],
+    rules: dict[str, Any], count_paths: tuple[str, str, str], conditions_path: str,
+) -> list[str]:
+    """Validate an explicit, source-backed equal-length diagnostic declaration.
+
+    This checks an invariant, not scientific justification. The caller emits a
+    review warning on success; undeclared profiles retain their existing policy.
+    """
+    prefix = "intact protocol smoke"
+    errors: list[str] = []
+    declaration = _nested_get(data, "task.smoke_preserve_protocol")
+    if rules.get("allow_intact_protocol_smoke") is not True:
+        errors.append(f"{prefix}: contract does not enable this declaration")
+    if not isinstance(declaration, dict):
+        return errors + [f"{prefix}: task.smoke_preserve_protocol must be a mapping"]
+    rationale = declaration.get("rationale")
+    if not isinstance(rationale, str) or len(" ".join(rationale.split())) < 40:
+        errors.append(f"{prefix}: rationale must contain at least 40 non-padding characters")
+    reference = declaration.get("reference")
+    try:
+        if not isinstance(reference, str) or not reference.strip():
+            raise ValueError("missing reference")
+        relative = Path(reference)
+        if relative.is_absolute() or relative.drive or ".." in relative.parts or not relative.parts or relative.parts[0] != "references":
+            raise ValueError("reference must be relative within references without parent traversal")
+        # Do not resolve the allowed directory: a symlink/junction escaping the
+        # task's physical references directory must not redefine the boundary.
+        allowed = task_dir.resolve() / "references"
+        resolved = (task_dir / relative).resolve(strict=True)
+        if not resolved.is_relative_to(allowed) or not resolved.is_file():
+            raise ValueError("reference escapes references or is not a file")
+        if not resolved.read_text(encoding="utf-8").strip():
+            raise ValueError("reference is empty")
+    except (OSError, ValueError, UnicodeError, RuntimeError) as exc:
+        errors.append(f"{prefix}: invalid source reference ({exc})")
+    if _nested_get(data, "task.diagnostic") is not True:
+        errors.append(f"{prefix}: task.diagnostic must be true")
+    for path in count_paths:
+        current, original = _nested_get(data, path), _nested_get(base, path)
+        if type(current) is not int or type(original) is not int or current < 1 or current != original:
+            errors.append(f"{prefix}: {path} must be a positive integer exactly equal to base")
+    current_conditions, base_conditions = _nested_get(data, conditions_path), _nested_get(base, conditions_path)
+    if not isinstance(current_conditions, list) or not current_conditions or not all(isinstance(item, str) for item in current_conditions) or current_conditions != base_conditions:
+        errors.append(f"{prefix}: conditions must exactly preserve the base sequence")
+    timing, base_timing = data.get("timing"), base.get("timing")
+    try:
+        timing_equal = isinstance(timing, dict) and isinstance(base_timing, dict) and json.dumps(timing, sort_keys=True) == json.dumps(base_timing, sort_keys=True)
+    except (TypeError, ValueError):
+        timing_equal = False
+    if not timing_equal:
+        errors.append(f"{prefix}: timing must exactly match base")
+    return errors
+
+
 def _check_config_file(task_dir: Path, cfg: dict[str, Any]) -> ContractResult:
     name = str(cfg.get("name") or "config")
     rel = str(cfg.get("file") or "")
@@ -1122,6 +1177,20 @@ def _check_config_file(task_dir: Path, cfg: dict[str, Any]) -> ContractResult:
         cur_conds = _nested_get(data, conds_path)
         cond_count = len(cur_conds) if isinstance(cur_conds, list) else None
 
+        intact_protocol = False
+        if _nested_has(data, "task.smoke_preserve_protocol"):
+            if not isinstance(base_data, dict):
+                fails.append("intact protocol smoke: a valid base config is required")
+            else:
+                intact_errors = _check_intact_protocol_smoke(
+                    task_dir, data, base_data, profile_rules,
+                    (trials_path, blocks_path, tpb_path), conds_path,
+                )
+                fails.extend(intact_errors)
+                intact_protocol = not intact_errors
+                if intact_protocol:
+                    warns.append("intact protocol smoke: equal-length diagnostic preserves count, condition and timing invariants; source rationale still requires human review, not scientific certification")
+
         if bool(profile_rules.get("require_shorter_than_base", False)) and base_data is not None:
             base_trials = _as_int(_nested_get(base_data, trials_path))
             allow_equal_lte = _as_int(profile_rules.get("allow_equal_when_base_trials_lte"))
@@ -1130,7 +1199,8 @@ def _check_config_file(task_dir: Path, cfg: dict[str, Any]) -> ContractResult:
             elif base_trials is None:
                 fails.append(f"profile_rules missing numeric value in base: {trials_path}")
             elif cur_trials >= base_trials and not (
-                allow_equal_lte is not None and base_trials <= allow_equal_lte and cur_trials == base_trials
+                (allow_equal_lte is not None and base_trials <= allow_equal_lte and cur_trials == base_trials)
+                or (intact_protocol and cur_trials == base_trials)
             ):
                 fails.append(
                     f"smoke profile must be shorter than base: {trials_path}={cur_trials} "
